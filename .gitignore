@@ -1,1 +1,10 @@
-# macos files
+# macOS files
+.DS_Store
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# local solution directory
+yoav_sol.py

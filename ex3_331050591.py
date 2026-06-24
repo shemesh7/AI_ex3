@@ -327,8 +327,9 @@ class Controller:
         self._needs_rebuild    = True
 
         self._t0 = time.perf_counter()
-        # RL setting: 30 seeds evaluated; keep per-seed wall time to ~8-12s.
-        self._time_budget = 2.0 + 0.025 * self.max_steps
+        # Grader allows 20 + 0.5*horizon per seed; use half to leave margin
+        # for rebuild overhead (not time-regulated) on slow university servers.
+        self._time_budget = 10.0 + 0.25 * self.max_steps
 
         self._rebuild_planner_state()
 
