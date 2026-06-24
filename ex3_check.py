@@ -1,10 +1,10 @@
 import time
 import ext_elev
-import ex3
+import ex3_331050591 as ex3_331050591
 
 
 def solve(api):
-    controller = ex3.Controller(api)
+    controller = ex3_331050591.Controller(api)
     for _ in range(api.get_max_steps()):
         action = controller.choose_next_action(api.get_current_state())
         api.submit_next_action(action)
