@@ -127,8 +127,21 @@ def main():
 
         print(f"{prob:<12}{bl_part}{sep}{sol_part}")
 
-    # ── Win % rows ────────────────────────────────────────────────────────
+    # ── Sum row ───────────────────────────────────────────────────────────
     print(divider)
+    sums = {lb: sum(solutions[lb].get(p, 0) for p in PROBLEM_ORDER) for lb in sol_labels}
+    bl_sums = {bl: sum(baselines.get(p, {}).get(bl, 0) for p in PROBLEM_ORDER) for bl in BASELINES}
+    best_sum = max(sums.values()) if sums else None
+    sum_bl = "".join(f"{sums[next(iter(sol_labels))] - bl_sums[bl]:>+{col_w}.1f}" for bl in BASELINES)
+    sum_sol = ""
+    for lb in sol_labels:
+        s = sums[lb]
+        tag = "*" if len(sol_labels) > 1 and s == best_sum else ""
+        sum_sol += f"{tag+f'{s:.1f}':>{col_w}}"
+    print(f"{'SUM':<12}{sum_bl}{sep}{sum_sol}")
+    print(divider)
+
+    # ── Win % rows ────────────────────────────────────────────────────────
     for lb in sol_labels:
         win_row = f"{'Win% '+lb:<12}"
         for bl in BASELINES:

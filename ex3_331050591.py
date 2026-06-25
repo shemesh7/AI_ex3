@@ -428,10 +428,13 @@ class Controller:
                 for p in self.target
             )
         ]
-        self._plan_eids = (
-            (max(anchor_cands, key=lambda e: self.pe[e]),)
-            if anchor_cands else tuple(self.elev_ids)
-        )
+        if len(anchor_cands) == len(self.elev_ids) and len(self.elev_ids) >= 2:
+            # All elevators have full coverage — keep both for coordinated planning
+            self._plan_eids = tuple(sorted(self.elev_ids, key=lambda e: self.pe[e], reverse=True)[:2])
+        elif anchor_cands:
+            self._plan_eids = (max(anchor_cands, key=lambda e: self.pe[e]),)
+        else:
+            self._plan_eids = tuple(self.elev_ids)
 
         n_t = len(self.target)
         any_relay = any(
@@ -458,7 +461,7 @@ class Controller:
         any_broken = any(self.pe[e] < 0.5 for e in self.elev_ids)
         self._use_astar = (
             self.allpersons_flag and n_t >= 4
-            and any_relay
+            and (any_relay or len(self._plan_eids) >= 2)
             and len(self._plan_eids) <= 2
             and (all_batchable or not any_broken)
         )
