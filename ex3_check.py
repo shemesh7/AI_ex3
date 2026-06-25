@@ -1,3 +1,4 @@
+import sys
 import time
 import ext_elev
 import ex3_331050591 as ex3
@@ -303,7 +304,7 @@ def main():
     n_runs = 30
     debug_mode = False
 
-    out_file = "Solution.txt"
+    out_file = sys.argv[1] if len(sys.argv) > 1 else "Solution.txt"
     with open(out_file, "a", encoding="utf-8") as f:
         f.write(f"Averages per problem (n_runs = {n_runs})\n")
         f.write("=" * 50 + "\n\n")
