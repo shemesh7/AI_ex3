@@ -29,3 +29,11 @@ p1_hard: reward_average=1207.500000 | time_average=9.331879s
 e1_hard: reward_average=1428.133333 | time_average=19.315734s
 e2_hard: reward_average=915.833333 | time_average=2.639208s
 e3_hard: reward_average=937.600000 | time_average=12.595112s
+e4_hard: reward_average=1523.266667 | time_average=15.307476s
+e5_hard: reward_average=964.333333 | time_average=19.027975s
+m1_hard: reward_average=883.900000 | time_average=1.107150s
+m2_hard: reward_average=799.866667 | time_average=2.369471s
+m3_hard: reward_average=792.300000 | time_average=5.649707s
+m4_hard: reward_average=1256.566667 | time_average=0.924733s
+m5_hard: reward_average=866.533333 | time_average=2.057154s
+rl_hard: reward_average=5487.366667 | time_average=0.096428s

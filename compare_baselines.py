@@ -54,7 +54,7 @@ def find_solution_files(explicit_args):
     if explicit_args:
         return [(Path(p).stem, base_dir / p) for p in explicit_args]
     # Auto-detect: Solution.txt + any Solution_v*.txt
-    files = sorted(base_dir.glob("Solution_v*.txt"))
+    files = sorted(base_dir.glob("Solution_*.txt"))
     default = base_dir / "Solution.txt"
     candidates = ([default] if default.exists() else []) + files
     return [(p.stem, p) for p in candidates]
