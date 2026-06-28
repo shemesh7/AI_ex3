@@ -1,5 +1,5 @@
 """
-ADP (Adaptive Dynamic Programming) + GLIE controller for the hidden-model
+ADP (Adaptive Dynamic Programming) controller for the hidden-model
 multi-elevator MDP.
 
 Architecture
@@ -8,15 +8,17 @@ Architecture
   and qp (person ENTER/EXIT success); per-person running mean for Erew.
 • Planner:          the full expectimax + A* engine from Assignment 2, fed the
   empirical estimates.  Plans are rebuilt whenever estimates change materially.
-• Exploration:      epsilon-greedy (GLIE) with extra mass on under-explored
-  entities; epsilon decays linearly to a small floor.
+• Cycle selection:  UCB1 on Erew (inflates under-explored persons); optimistic
+  Beta(9,1) prior for pe/qp; exploration guard prevents premature farming.
+• Deadlock fix:     hard EXIT rule forces exit when a targeted person is already
+  at their goal floor in an elevator, breaking multi-person depth-3+ deadlocks.
 
 Zero data leaks across seeds: all state lives exclusively in instance variables
 created in __init__.
 """
 
 import heapq
-import random
+import math
 import re
 import time
 
@@ -29,8 +31,9 @@ INF = float("inf")
 # ── Bayesian prior for success probs: Beta(alpha, beta) → mean = alpha/(a+b)
 _PA = 9.0   # prior "successes"   → prior mean 0.9
 _PB = 1.0   # prior "failures"
-_MIN_TRIES   = 8       # samples below this → entity treated as under-explored
 _REBUILD_DIV = 20      # rebuild every max_steps//_REBUILD_DIV steps (min 15)
+_FARM_MARGIN = 1.05    # partial subset must beat full-cycle rate by this factor
+_UCB_C       = 2.0     # UCB1 confidence coefficient for Erew exploration
 
 _ACTION_RE = re.compile(
     r'\s*(MOVE|ENTER|EXIT)\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*\}\s*'
@@ -294,15 +297,20 @@ class Controller:
         self._esucc  = {e: 0 for e in self.elev_ids}
         self._ptries = {p: 0 for p in self.person_ids}
         self._psucc  = {p: 0 for p in self.person_ids}
-        self._rsum   = {p: 0.0 for p in self.person_ids}
-        self._rcnt   = {p: 0   for p in self.person_ids}
+        self._rsum      = {p: 0.0 for p in self.person_ids}
+        self._rcnt      = {p: 0   for p in self.person_ids}
+        self._total_rcnt = 0   # sum of all _rcnt values (for UCB denominator)
 
-        # ── Initial empirical estimates (Beta prior mean = 0.9) ───────────
-        self.pe   = {e: _PA / (_PA + _PB) for e in self.elev_ids}
-        self.qp   = {p: _PA / (_PA + _PB) for p in self.person_ids}
-        # Reward prior: aim slightly below goal_reward/n (conservative)
-        n_p = max(1, len(self.person_ids))
-        self._rew_prior = max(4.0, self.goal_reward / n_p * 0.8)
+        # ── Posterior means (updated from observations) ───────────────────
+        _prior_mean = _PA / (_PA + _PB)
+        self._pe_mean = {e: _prior_mean for e in self.elev_ids}
+        self._qp_mean = {p: _prior_mean for p in self.person_ids}
+        # Planning values — Thompson samples drawn at each rebuild
+        self.pe = {e: _prior_mean for e in self.elev_ids}
+        self.qp = {p: _prior_mean for p in self.person_ids}
+        # Optimistic reward prior: goal_reward ensures unvisited persons always
+        # look attractive, forcing exploration before committing to farming.
+        self._rew_prior = float(self.goal_reward)
         self.Erew = {p: self._rew_prior for p in self.person_ids}
 
         # ── Last-action bookkeeping ────────────────────────────────────────
@@ -359,7 +367,7 @@ class Controller:
             if curr_efl.get(e) == target_f:
                 self._esucc[e] += 1
             n, s = self._etries[e], self._esucc[e]
-            self.pe[e] = (s + _PA) / (n + _PA + _PB)
+            self._pe_mean[e] = (s + _PA) / (n + _PA + _PB)
             if n in (5, 10, 20, 50):
                 self._needs_rebuild = True
 
@@ -369,7 +377,7 @@ class Controller:
             if curr_ploc.get(p) == ('in', e):
                 self._psucc[p] += 1
             n, s = self._ptries[p], self._psucc[p]
-            self.qp[p] = (s + _PA) / (n + _PA + _PB)
+            self._qp_mean[p] = (s + _PA) / (n + _PA + _PB)
             if n in (5, 10, 20, 50):
                 self._needs_rebuild = True
 
@@ -391,11 +399,12 @@ class Controller:
                     raw = max(0.0, raw)
                 self._rsum[p] += raw
                 self._rcnt[p] += 1
+                self._total_rcnt += 1
                 self.Erew[p] = self._rsum[p] / self._rcnt[p]
                 self._needs_rebuild = True
 
             n, s = self._ptries[p], self._psucc[p]
-            self.qp[p] = (s + _PA) / (n + _PA + _PB)
+            self._qp_mean[p] = (s + _PA) / (n + _PA + _PB)
             if n in (5, 10, 20, 50):
                 self._needs_rebuild = True
 
@@ -403,6 +412,12 @@ class Controller:
 
     def _rebuild_planner_state(self):
         """Re-derive plans/cycle/A* from current pe/qp/Erew estimates."""
+        # Use posterior means for all planning (no Thompson noise in routes).
+        for e in self.elev_ids:
+            self.pe[e] = self._pe_mean[e]
+        for p in self.person_ids:
+            self.qp[p] = self._qp_mean[p]
+
         self.plans       = {}
         self.deliverable = set()
         for p in self.person_ids:
@@ -563,19 +578,38 @@ class Controller:
         n = len(deliverable)
         if n == 0:
             return frozenset(), False, 0.0
+
+        # Exploration guard: don't allow farming until every deliverable person
+        # has been delivered at least once. Mirrors Ophir's deliver_count guard.
+        all_explored = all(self._rcnt[p] > 0 for p in deliverable)
+
+        full_set  = frozenset(deliverable)
         best_rate, best_target, best_allflag = -INF, frozenset(), False
+        full_rate, full_allflag = -INF, (full_set == self.all_persons)
+
         for mask in range(1, 1 << n):
             S       = frozenset(deliverable[i] for i in range(n) if (mask >> i) & 1)
             allflag = (S == self.all_persons)
-            reward  = sum(self.Erew[p] for p in S)
+            reward  = sum(self._ucb_erew(p) for p in S)
             if allflag:
                 reward += self.goal_reward
             cost = self._estimate_cycle_cost(S, allflag)
             if cost <= 0 or cost == INF:
                 continue
             rate = reward / cost
+            if S == full_set:
+                full_rate = rate
             if rate > best_rate:
                 best_rate, best_target, best_allflag = rate, S, allflag
+
+        # Only commit to a strict subset (farming) when:
+        #   1. All deliverable persons have been explored at least once.
+        #   2. The subset's rate clearly beats the full-cycle rate (FARM_MARGIN).
+        if best_target != full_set:
+            if not all_explored or best_rate < full_rate * _FARM_MARGIN:
+                if full_rate > -INF:
+                    return full_set, full_allflag, max(full_rate, 0.0)
+
         return best_target, best_allflag, max(best_rate, 0.0)
 
     def _estimate_cycle_cost(self, S_set, allflag):
@@ -910,6 +944,18 @@ class Controller:
         if k == 'ENTER':  return f"ENTER{{{act[1]},{act[2]}}}"
         return f"EXIT{{{act[1]},{act[2]}}}"
 
+    def _ucb_erew(self, p):
+        """UCB1 upper confidence bound on p's delivery reward.
+
+        Used in cycle selection to inflate under-explored persons, driving the
+        planner to visit them before committing to a farming subset.
+        """
+        n = self._rcnt[p]
+        if n == 0:
+            return self._rew_prior
+        t = max(self._total_rcnt, 1)
+        return self._rsum[p] / n + _UCB_C * math.sqrt(2.0 * math.log(t) / n)
+
     # ── Main entry point ──────────────────────────────────────────────────────
 
     def choose_next_action(self, state):
@@ -933,31 +979,21 @@ class Controller:
         present     = [p for p in self.target      if p in ploc]
         all_present = [p for p in self.person_ids  if p in ploc]
 
-        # ── 3. GLIE exploration ───────────────────────────────────────────
-        # Epsilon decays linearly from 0.30 to 0.04 over the horizon.
-        epsilon = max(0.04, 0.30 * (1.0 - t / self.max_steps))
-
-        if random.random() < epsilon:
-            # Collect legal candidates covering all present persons
-            cands_for_glie = self._candidate_actions(
-                efl, ew, ploc, present if present else all_present
-            )
-            # Prefer actions on under-explored entities
-            under = [
-                self._format(act) for act, _ in cands_for_glie
-                if (act[0] == 'MOVE'  and self._etries.get(act[1], 0) < _MIN_TRIES)
-                or (act[0] in ('ENTER', 'EXIT')
-                    and self._ptries.get(act[1], 0) < _MIN_TRIES)
-            ]
-            pool = under if under else [
-                self._format(act) for act, _ in cands_for_glie
-                if act[0] != 'RESET'
-            ]
-            if pool:
-                action = random.choice(pool)
-                self._last_state  = state
-                self._last_action = action
-                return action
+        # ── 3. Hard EXIT rule: break multi-person elevator deadlocks ─────
+        # When a targeted person is already in an elevator at their final
+        # goal floor, exit them IMMEDIATELY before the planner runs.
+        # Without this, the depth-3+ expectimax prefers keeping multi-person
+        # cargos in transit (to avoid expensive respawn cycles), causing a
+        # deadlock where neither person ever gets exited.
+        for e in self.elev_ids:
+            for p in present:
+                loc = ploc.get(p)
+                if (loc and loc[0] == 'in' and loc[1] == e
+                        and efl[e] == self.goal_floor[p]):
+                    action = self._format(('EXIT', p, e))
+                    self._last_state  = state
+                    self._last_action = action
+                    return action
 
         # ── 4. Exploit: planner (identical to ex2 choose_next_action) ─────
 
