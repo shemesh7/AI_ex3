@@ -1,20 +1,10 @@
 """
-ADP (Adaptive Dynamic Programming) controller for the hidden-model
-multi-elevator MDP.
+ADP agent with Bayesian counters for pe/qp and running mean for Erew.
+Plans via expectimax+A* (from ex2); cycle selection via UCB1; Beta(9,1) prior.
+Deadlock fix: force EXIT when targeted person is already at goal floor.
 
-Architecture
-────────────
-• Empirical model:  per-entity Bayesian counters for pe (elevator MOVE success)
-  and qp (person ENTER/EXIT success); per-person running mean for Erew.
-• Planner:          the full expectimax + A* engine from Assignment 2, fed the
-  empirical estimates.  Plans are rebuilt whenever estimates change materially.
-• Cycle selection:  UCB1 on Erew (inflates under-explored persons); optimistic
-  Beta(9,1) prior for pe/qp; exploration guard prevents premature farming.
-• Deadlock fix:     hard EXIT rule forces exit when a targeted person is already
-  at their goal floor in an elevator, breaking multi-person depth-3+ deadlocks.
-
-Zero data leaks across seeds: all state lives exclusively in instance variables
-created in __init__.
+Implemented with help from Claude Code (ideas and implementation).
+Some ideas adapted from Ophir Finchelstein's algorithm.
 """
 
 import heapq
